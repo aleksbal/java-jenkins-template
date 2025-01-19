@@ -1,0 +1,252 @@
+/*
+
+    Description of actions:
+
+    - build:        mvn clean package without tests
+    - test:         mvn test
+    - Build image:  mvn clean package spring-boot:build-image
+    - Push image:   pushes the image into artifactory, but only if the commit is in Master
+                    the artefact id and the version is used from pom
+    - AWS Deploy:   establishes a VPN connection and deploys file via SCP
+
+*/
+
+pipeline {
+
+    agent {
+         docker {
+            image 'artifactory.examples.org/company/build/maven-extended:3.8.4-openjdk-17_v4'
+            registryUrl 'https://artifactory.examples.org'
+            registryCredentialsId 'microserviceCreds'
+            args '-v $WORKSPACE:/tmp/sbapp -v /var/run/docker.sock:/var/run/docker.sock -u="root" -w /tmp/sbapp --cap-add=NET_ADMIN --device /dev/net/tun:/dev/net/tun'
+          reuseNode true
+        }
+    }
+
+    environment {
+
+          // SONAR
+        SONARHOST = "https://sonar.test.com"
+        SONARTOKEN = credentials("sonarkey")
+
+        // ARTIFACTORY
+        REPOSITORY = 'platform'
+        GROUP_PATH = 'org/examples/'
+
+        ARTIFACTORY_CREDENTIALS = credentials('kmicroserviceCreds')
+        ARTIFACTORY_URL = 'https://artifactory.examples.org/artifactory'
+        ARTIFACTORY_API_KEY = credentials('apiKey')
+
+        // OPEN VPN
+        VPN_CONFIG_FILE = credentials('openVpnProfile')
+        SSH_KEY = credentials('OPEN_SSH')
+
+        ARTIFACT_ID = 'microservice'
+        REMOTE_SERVER = 'ec2-user@10.0.69.147'
+        REMOTE_DIR = '/opt/microservice'
+    }
+
+    stages {
+
+        stage('Fetch Versions') {
+            steps {
+                script {
+                    def versions = sh(
+                        script: '''
+                        curl -s -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
+                        "${ARTIFACTORY_URL}/api/storage/${REPOSITORY}/org/examples/platform/microservice" \
+                        | grep '"uri"' \
+                        | cut -d '"' -f 4 \
+                        | sed 's|^/||'
+                        ''',
+                        returnStdout: true
+                    ).trim()
+
+                    // Save versions to a file
+                    writeFile file: 'versions.txt', text: versions
+                }
+            }
+        }
+        stage('Select and Print Version') {
+            steps {
+                script {
+                    def selectedVersion = input(
+                        message: 'Select a version',
+                        parameters: [
+                            choice(
+                                name: 'VERSION',
+                                choices: readFile('versions.txt').trim(),
+                                description: 'Select the version of the JAR to download'
+                            )
+                        ]
+                    )
+                    echo "Selected version: ${selectedVersion}"
+                }
+            }
+        }
+
+        // Maven clean package
+        stage('Build') {
+            steps {
+                sh 'mvn -B -DskipTests clean package'
+                sh 'docker --version'
+                sh 'curl --version'
+            }
+        }
+
+        // Running tests via maven
+	      stage('Test') {
+            steps {
+                sh 'mvn test'
+                sh 'mvn surefire-report:report'
+            }
+            post {
+                  always {
+                  sh 'echo save unit test results'
+                  junit '**/target/surefire-reports/TEST-*.xml'
+                }
+            }
+        }
+
+        // build image via maven
+        stage('Build image') {
+            steps {
+                sh 'mvn clean verify spring-boot:build-image'
+            }
+        }
+
+        // static code analysis using sonarqube
+        stage('SonarQube Analysis') {
+            steps {
+                sh """
+                mvn sonar:sonar \
+                    -Pcoverage \
+                    -Dsonar.projectKey=com.test.appl:kwg-abfrage \
+                    -Dsonar.host.url=$SONARHOST \
+                    -Dsonar.login=$SONARTOKEN
+                """
+            }
+        }
+
+        stage('Push to Artifactory') {
+            steps {
+                script {
+                    // Read the version from pom.xml
+                    def pom = readMavenPom file: 'pom.xml'
+                    def version = pom.version
+                    def artifactId = pom.artifactId
+
+                    def artifactPath = "${ARTIFACTORY_URL}/${REPOSITORY}/${GROUP_PATH}/${artifactId}/${version}/${artifactId}-${version}.jar"
+
+                    sh """
+                    set -e  # Exit immediately if a command fails
+
+                    # Attempt to upload the artifact to Artifactory
+                    if ! curl --fail -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
+                              -T "target/${artifactId}-${version}.jar" \
+                              ${artifactPath}; then
+                        echo "ERROR: Failed to upload artifact to Artifactory." >&2
+                        exit 1
+                    fi
+
+                    echo "Artifact successfully uploaded to Artifactory: ${artifactPath}"
+                    """
+                }
+            }
+        }
+
+        stage('Pull from Artifactory') {
+            steps {
+                script {
+                    // Read the version from pom.xml
+                    def pom = readMavenPom file: 'pom.xml'
+                    def version = pom.version
+                    def artifactId = pom.artifactId
+
+                    def downloadUrl = "${ARTIFACTORY_URL}/${REPOSITORY}/${GROUP_PATH}/${artifactId}/${version}/${artifactId}-${version}.jar"
+                    sh """
+                    echo "Downloading artifact from Artifactory: ${downloadUrl}"
+                    curl -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
+                         -o target/${artifactId}-${version}-copy.jar \
+                         ${downloadUrl}
+
+                    echo "Artifact downloaded: ${artifactId}-${version}.jar"
+                    """
+                }
+            }
+        }
+
+        stage('Establish VPN Connection') {
+            steps {
+                script {
+                    echo "Establishing VPN connection using configuration file: ${VPN_CONFIG_FILE}..."
+                    sh """
+                    openvpn --config ${VPN_CONFIG_FILE} --daemon --log /tmp/openvpn.log
+                    sleep 10
+                    """
+                    echo "VPN connection established. Checking connectivity..."
+                    sh """
+                    ping -c 4 10.0.69.147 || exit 1
+                    """
+                }
+            }
+        }
+
+       stage('Deploy to Server') {
+           steps {
+               script {
+                  // Get the current branch name
+                  def branchName = env.BRANCH_NAME
+                  // Get the current commit hash
+                  def commitHash = env.GIT_COMMIT
+
+                  // Read the version from pom.xml - later it should be an input param!
+                  def pom = readMavenPom file: 'pom.xml'
+                  def version = pom.version
+                  def artifactId = pom.artifactId
+
+                  // Transfer the JAR file to the remote server
+                  sh "sudo scp -v -o StrictHostKeyChecking=no -i ${SSH_KEY} ./target/${artifactId}-${version}.jar ${REMOTE_SERVER}:/opt/${artifactId}/latest/"
+
+                  // Execute commands safely inside SSH
+                  sh """
+                     sudo ssh -i ${SSH_KEY} ${REMOTE_SERVER} << EOF
+                         set -e  # Stop execution on any failure
+                         sudo mkdir -p /opt/${artifactId}/latest
+                         sudo mkdir -p /opt/${artifactId}/current
+
+                         # Create a new symlink with a temporary name
+                         sudo ln -sfn /opt/${artifactId}/latest/${artifactId}-${version}.jar /opt/${artifactId}/current/${artifactId}.jar.new
+
+                         # Atomically replace the old symlink with the new one
+                         sudo mv -f /opt/${artifactId}/current/${artifactId}.jar.new /opt/${artifactId}/current/${artifactId}.jar
+
+                         # Verify the symlink before restarting the service
+                         ls -l /opt/${artifactId}/current/${artifactId}.jar
+
+                         # Restart the service only if the new symlink exists
+                         if [ -L /opt/${artifactId}/current/${artifactId}.jar ]; then
+                             sudo systemctl restart ${artifactId}
+                         else
+                             echo "ERROR: Symlink replacement failed!" >&2
+                             exit 1
+                         fi
+                  EOF
+                  """
+                }
+            }
+        }
+    }
+
+    // always close the connection
+    post {
+        always {
+            // Ensure VPN is stopped even if the build fails
+            //node('kill openVPN')  {
+                script {
+                    sh 'sudo killall openvpn || true'
+                }
+            //}
+        }
+    }
+}
