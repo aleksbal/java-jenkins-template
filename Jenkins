@@ -1,23 +1,23 @@
 /*
+    Description:
 
-    Description of actions:
-
-    - build:        mvn clean package without tests
-    - test:         mvn test
-    - Build image:  mvn clean package spring-boot:build-image
-    - Push image:   pushes the image into artifactory, but only if the commit is in Master
-                    the artefact id and the version is used from pom
-    - AWS Deploy:   establishes a VPN connection and deploys file via SCP
-
+    - build:            mvn clean package without tests
+    - test:             mvn test
+    - Build image:      mvn clean package spring-boot:build-image
+    - Push image:       pushes the image into  artifactory
+                        the artefact id and the version is used from pom
+    - AWS Deploy Ec2:   establishes a VPN connection and deploys file via SCP
 */
+
+def selectedVersion="0.0.1"
 
 pipeline {
 
     agent {
          docker {
-            image 'artifactory.examples.org/company/build/maven-extended:3.8.4-openjdk-17_v4'
-            registryUrl 'https://artifactory.examples.org'
-            registryCredentialsId 'microserviceCreds'
+            image 'artifactory.xyc.com/platform/build/maven-extended:3.8.4-openjdk-17_v4'
+            registryUrl 'https://artifactory.xyz.com/platform'
+            registryCredentialsId 'kontenAbrufCreds'
             args '-v $WORKSPACE:/tmp/sbapp -v /var/run/docker.sock:/var/run/docker.sock -u="root" -w /tmp/sbapp --cap-add=NET_ADMIN --device /dev/net/tun:/dev/net/tun'
           reuseNode true
         }
@@ -26,64 +26,33 @@ pipeline {
     environment {
 
           // SONAR
-        SONARHOST = "https://sonar.test.com"
+        SONARHOST = "https://sonar.platform.org"
         SONARTOKEN = credentials("sonarkey")
 
         // ARTIFACTORY
         REPOSITORY = 'platform'
-        GROUP_PATH = 'org/examples/'
+        GROUP_PATH = 'org/platform/microservice'
 
-        ARTIFACTORY_CREDENTIALS = credentials('kmicroserviceCreds')
-        ARTIFACTORY_URL = 'https://artifactory.examples.org/artifactory'
+        ARTIFACTORY_CREDENTIALS = credentials('platformCreds')
+        ARTIFACTORY_URL = 'https://artifactory.platform.org/artifactory'
         ARTIFACTORY_API_KEY = credentials('apiKey')
+
+        // DIV
+        DATE = new Date().format('yy.M')
+        TAG = "${DATE}"
 
         // OPEN VPN
         VPN_CONFIG_FILE = credentials('openVpnProfile')
         SSH_KEY = credentials('OPEN_SSH')
 
         ARTIFACT_ID = 'microservice'
-        REMOTE_SERVER = 'ec2-user@10.0.69.147'
+        REMOTE_SERVER = 'ec2-user@10.0.38.157'
         REMOTE_DIR = '/opt/microservice'
+
+        SELECTED_VERSION = ''
     }
 
     stages {
-
-        stage('Fetch Versions') {
-            steps {
-                script {
-                    def versions = sh(
-                        script: '''
-                        curl -s -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
-                        "${ARTIFACTORY_URL}/api/storage/${REPOSITORY}/org/examples/platform/microservice" \
-                        | grep '"uri"' \
-                        | cut -d '"' -f 4 \
-                        | sed 's|^/||'
-                        ''',
-                        returnStdout: true
-                    ).trim()
-
-                    // Save versions to a file
-                    writeFile file: 'versions.txt', text: versions
-                }
-            }
-        }
-        stage('Select and Print Version') {
-            steps {
-                script {
-                    def selectedVersion = input(
-                        message: 'Select a version',
-                        parameters: [
-                            choice(
-                                name: 'VERSION',
-                                choices: readFile('versions.txt').trim(),
-                                description: 'Select the version of the JAR to download'
-                            )
-                        ]
-                    )
-                    echo "Selected version: ${selectedVersion}"
-                }
-            }
-        }
 
         // Maven clean package
         stage('Build') {
@@ -109,7 +78,7 @@ pipeline {
         }
 
         // build image via maven
-        stage('Build image') {
+        stage('Build SPB Image') {
             steps {
                 sh 'mvn clean verify spring-boot:build-image'
             }
@@ -121,7 +90,7 @@ pipeline {
                 sh """
                 mvn sonar:sonar \
                     -Pcoverage \
-                    -Dsonar.projectKey=com.test.appl:kwg-abfrage \
+                    -Dsonar.projectKey=com.xyz.platform:microservice \
                     -Dsonar.host.url=$SONARHOST \
                     -Dsonar.login=$SONARTOKEN
                 """
@@ -155,19 +124,57 @@ pipeline {
             }
         }
 
+        stage('Fetch Versions') {
+            steps {
+                script {
+                    def versions = sh(
+                        script: '''
+                        curl -s -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
+                        "${ARTIFACTORY_URL}/api/storage/${REPOSITORY}/org/xyz/platform/microservice" \
+                        | grep '"uri"' \
+                        | cut -d '"' -f 4 \
+                        | sed 's|^/||'
+                        ''',
+                        returnStdout: true
+                    ).trim()
+
+                    // Save versions to a file
+                    writeFile file: 'versions.txt', text: versions
+                }
+            }
+        }
+
+        stage('Select Version for Deployment') {
+            steps {
+                script {
+                    selectedVersion = input(
+                        message: 'Select a version',
+                        parameters: [
+                            choice(
+                                name: 'VERSION',
+                                choices: readFile('versions.txt').trim(),
+                                description: 'Select the version to download'
+                            )
+                        ]
+                    )
+                    echo "Selected version: ${selectedVersion}"
+                }
+            }
+        }
+
         stage('Pull from Artifactory') {
             steps {
                 script {
                     // Read the version from pom.xml
                     def pom = readMavenPom file: 'pom.xml'
-                    def version = pom.version
+                    def version = selectedVersion
                     def artifactId = pom.artifactId
 
                     def downloadUrl = "${ARTIFACTORY_URL}/${REPOSITORY}/${GROUP_PATH}/${artifactId}/${version}/${artifactId}-${version}.jar"
                     sh """
                     echo "Downloading artifact from Artifactory: ${downloadUrl}"
                     curl -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
-                         -o target/${artifactId}-${version}-copy.jar \
+                         -o ${artifactId}-${version}.jar \
                          ${downloadUrl}
 
                     echo "Artifact downloaded: ${artifactId}-${version}.jar"
@@ -186,7 +193,7 @@ pipeline {
                     """
                     echo "VPN connection established. Checking connectivity..."
                     sh """
-                    ping -c 4 10.0.69.147 || exit 1
+                    ping -c 4 10.0.30.1547 || exit 1
                     """
                 }
             }
@@ -200,13 +207,13 @@ pipeline {
                   // Get the current commit hash
                   def commitHash = env.GIT_COMMIT
 
-                  // Read the version from pom.xml - later it should be an input param!
+                  // Read the version from pom.xml
                   def pom = readMavenPom file: 'pom.xml'
-                  def version = pom.version
+                  def version = selectedVersion
                   def artifactId = pom.artifactId
 
                   // Transfer the JAR file to the remote server
-                  sh "sudo scp -v -o StrictHostKeyChecking=no -i ${SSH_KEY} ./target/${artifactId}-${version}.jar ${REMOTE_SERVER}:/opt/${artifactId}/latest/"
+                  sh "sudo scp -v -o StrictHostKeyChecking=no -i ${SSH_KEY} ${artifactId}-${version}.jar ${REMOTE_SERVER}:/opt/${artifactId}/latest/"
 
                   // Execute commands safely inside SSH
                   sh """
@@ -231,7 +238,7 @@ pipeline {
                              echo "ERROR: Symlink replacement failed!" >&2
                              exit 1
                          fi
-                  EOF
+EOF
                   """
                 }
             }
@@ -242,11 +249,9 @@ pipeline {
     post {
         always {
             // Ensure VPN is stopped even if the build fails
-            //node('kill openVPN')  {
-                script {
-                    sh 'sudo killall openvpn || true'
-                }
-            //}
+            script {
+                sh 'sudo killall openvpn || true'
+            }
         }
     }
 }
