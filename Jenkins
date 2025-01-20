@@ -15,7 +15,7 @@ pipeline {
 
     agent {
          docker {
-            image 'artifactory.xyc.com/platform/build/maven-extended:3.8.4-openjdk-17_v4'
+            image 'artifactory.xyz.org/platform/build/maven-extended:3.8.4-openjdk-17_v4'
             registryUrl 'https://artifactory.xyz.com/platform'
             registryCredentialsId 'kontenAbrufCreds'
             args '-v $WORKSPACE:/tmp/sbapp -v /var/run/docker.sock:/var/run/docker.sock -u="root" -w /tmp/sbapp --cap-add=NET_ADMIN --device /dev/net/tun:/dev/net/tun'
