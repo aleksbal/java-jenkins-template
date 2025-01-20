@@ -215,16 +215,16 @@ pipeline {
                          sudo mkdir -p /opt/${artifactId}/latest
                          sudo mkdir -p /opt/${artifactId}/current
 
-                         # Create a new symlink with a temporary name
+                         // Create a new symlink with a temporary name
                          sudo ln -sfn /opt/${artifactId}/latest/${artifactId}-${version}.jar /opt/${artifactId}/current/${artifactId}.jar.new
 
-                         # Atomically replace the old symlink with the new one
+                         // Atomically replace the old symlink with the new one
                          sudo mv -f /opt/${artifactId}/current/${artifactId}.jar.new /opt/${artifactId}/current/${artifactId}.jar
 
-                         # Verify the symlink before restarting the service
+                         // Verify the symlink before restarting the service
                          ls -l /opt/${artifactId}/current/${artifactId}.jar
 
-                         # Restart the service only if the new symlink exists
+                         // Restart the service only if the new symlink exists
                          if [ -L /opt/${artifactId}/current/${artifactId}.jar ]; then
                              sudo systemctl restart ${artifactId}
                          else
