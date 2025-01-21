@@ -9,15 +9,17 @@
     - AWS Deploy Ec2:   establishes a VPN connection and deploys file via SCP
 */
 
-def selectedVersion="0.0.1"
+
+def selectedArtifact=""
+def selectedVersion="0.0.0"
 
 pipeline {
 
     agent {
          docker {
-            image 'artifactory.xyz.org/platform/build/maven-extended:3.8.4-openjdk-17_v4'
-            registryUrl 'https://artifactory.xyz.com/platform'
-            registryCredentialsId 'kontenAbrufCreds'
+            image 'artifactory.dxc.com/kontenabruf-docker/build/maven-extended:3.8.4-openjdk-17_v4'
+            registryUrl 'https://artifactory.examples.org/platform'
+            registryCredentialsId 'microserviceCreds'
             args '-v $WORKSPACE:/tmp/sbapp -v /var/run/docker.sock:/var/run/docker.sock -u="root" -w /tmp/sbapp --cap-add=NET_ADMIN --device /dev/net/tun:/dev/net/tun'
           reuseNode true
         }
@@ -25,24 +27,23 @@ pipeline {
 
     environment {
 
-	// SONAR
-        SONARHOST = "https://sonar.platform.org"
-        SONARTOKEN = credentials("sonarkey")
+        // SONAR
+        SONAR_URL = "https://someurl.here.org"
+        SONAR_API_KEY = credentials("sonar_api_key")
 
         // ARTIFACTORY
+        ARTIFACTORY_URL = 'https://artifactory.examples.org/artifactory'
+        ARTIFACTORY_API_KEY = credentials('artifactory_api_key')
         REPOSITORY = 'platform'
-        GROUP_PATH = 'org/platform/microservice'
-
-        ARTIFACTORY_URL = 'https://artifactory.platform.org/artifactory'
-        ARTIFACTORY_API_KEY = credentials('apiKey')
+        GROUP_PATH = 'org/examples'
 
         // OPEN VPN
-        VPN_CONFIG_FILE = credentials('openVpnProfile')
-        SSH_KEY = credentials('OPEN_SSH')
+        VPN_CONFIG_FILE = credentials('openvpn_config')
+        SSH_KEY = credentials('open_ssh')
 
-        ARTIFACT_ID = 'microservice'
-        REMOTE_SERVER = 'ec2-user@10.0.38.157'
-        REMOTE_DIR = '/opt/microservice'
+        // AWS
+        REMOTE_SERVER = 'ec2-user@10.0.0.1'
+        REMOTE_DIR = '/opt/kwg-abfrage'
     }
 
     stages {
@@ -83,9 +84,9 @@ pipeline {
                 sh """
                 mvn sonar:sonar \
                     -Pcoverage \
-                    -Dsonar.projectKey=com.xyz.platform:microservice \
-                    -Dsonar.host.url=$SONARHOST \
-                    -Dsonar.login=$SONARTOKEN
+                    -Dsonar.projectKey=com.dxc.appl:kwg-abfrage \
+                    -Dsonar.host.url=$SONAR_URL \
+                    -Dsonar.login=$SONAR_API_KEY
                 """
             }
         }
@@ -101,18 +102,62 @@ pipeline {
                     def artifactPath = "${ARTIFACTORY_URL}/${REPOSITORY}/${GROUP_PATH}/${artifactId}/${version}/${artifactId}-${version}.jar"
 
                     sh """
-                    set -e  # Exit immediately if a command fails
+                      set -e  # Exit immediately if a command fails
 
-                    # Attempt to upload the artifact to Artifactory
-                    if ! curl --fail -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
-                              -T "target/${artifactId}-${version}.jar" \
-                              ${artifactPath}; then
-                        echo "ERROR: Failed to upload artifact to Artifactory." >&2
-                        exit 1
-                    fi
+                      # Attempt to upload the artifact to Artifactory
+                      if ! curl --fail -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
+                                -T "target/${artifactId}-${version}.jar" \
+                                ${artifactPath}; then
+                          echo "ERROR: Failed to upload artifact to Artifactory." >&2
+                          exit 1
+                      fi
 
-                    echo "Artifact successfully uploaded to Artifactory: ${artifactPath}"
+                      echo "Artifact successfully uploaded to Artifactory: ${artifactPath}"
                     """
+                }
+            }
+        }
+
+        stage('Fetch Artifacts') {
+            steps {
+                script {
+
+                    def artifactoryUrl = "${ARTIFACTORY_URL}/api/storage/${REPOSITORY}/${GROUP_PATH}";
+
+                    def artifacts = sh(
+                        script: """
+                          curl -s -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
+                          ${ARTIFACTORY_URL}/api/storage/${REPOSITORY}/${GROUP_PATH} \
+                          | grep '"uri"' \
+                          | grep -v '"uri" : "http' \
+                          | grep -Eo '/[^/"]+' \
+                          | sed 's|^/||'
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Response from artifactory: ${artifacts}"
+
+                    // Save versions to a file
+                    writeFile file: 'artifacts.txt', text: artifacts
+                }
+            }
+        }
+
+        stage('Select Artifact for Deployment') {
+            steps {
+                script {
+                    selectedArtefact = input(
+                        message: 'Select an artifact',
+                        parameters: [
+                            choice(
+                                name: 'ARTIFACT',
+                                choices: readFile('artifacts.txt').trim(),
+                                description: 'Select the artifact to deploy'
+                            )
+                        ]
+                    )
+                    echo "Selected artifact: ${selectedArtefact}"
                 }
             }
         }
@@ -120,14 +165,19 @@ pipeline {
         stage('Fetch Versions') {
             steps {
                 script {
+
+                    def artifactId = selectedArtefact
+
+                    def artifactoryUrl = "${ARTIFACTORY_URL}/api/storage/${REPOSITORY}/${GROUP_PATH}/${artifactId}";
+
                     def versions = sh(
-                        script: '''
-                        curl -s -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
-                        ${ARTIFACTORY_URL}/api/storage/${REPOSITORY}/${GROUP_PATH}/${artifactId} \
-                        | grep '"uri"' \
-                        | cut -d '"' -f 4 \
-                        | sed 's|^/||'
-                        ''',
+                        script: """
+                          curl -s -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
+                          ${artifactoryUrl} \
+                          | grep '"uri"' \
+                          | grep -Eo '/[0-9]+\\.[0-9]+\\.[0-9]+' \
+                          | sed 's|^/||'
+                        """,
                         returnStdout: true
                     ).trim()
 
@@ -146,7 +196,7 @@ pipeline {
                             choice(
                                 name: 'VERSION',
                                 choices: readFile('versions.txt').trim(),
-                                description: 'Select the version to download'
+                                description: 'Select the version to deploy'
                             )
                         ]
                     )
@@ -158,10 +208,9 @@ pipeline {
         stage('Pull from Artifactory') {
             steps {
                 script {
-                    // Read the version from pom.xml
-                    def pom = readMavenPom file: 'pom.xml'
+
                     def version = selectedVersion
-                    def artifactId = pom.artifactId
+                    def artifactId = selectedArtefact
 
                     def downloadUrl = "${ARTIFACTORY_URL}/${REPOSITORY}/${GROUP_PATH}/${artifactId}/${version}/${artifactId}-${version}.jar"
                     sh """
@@ -180,13 +229,25 @@ pipeline {
             steps {
                 script {
                     echo "Establishing VPN connection using configuration file: ${VPN_CONFIG_FILE}..."
+
                     sh """
-                    openvpn --config ${VPN_CONFIG_FILE} --daemon --log /tmp/openvpn.log
-                    sleep 10
-                    """
-                    echo "VPN connection established. Checking connectivity..."
-                    sh """
-                    ping -c 4 10.0.30.1547 || exit 1
+                      set -e
+
+                      # Start VPN connection in daemon mode
+                      openvpn --config ${VPN_CONFIG_FILE} --daemon --log /tmp/openvpn.log
+
+                      # Wait for VPN to establish and verify connectivity
+                      for i in {1..3}; do
+                          echo "Waiting for VPN to establish... Attempt \$i"
+                          sleep 5
+                          if ping -c 1 10.0.30.147 > /dev/null 2>&1; then
+                              echo "VPN connection successfully established!"
+                              exit 0
+                          fi
+                      done
+
+                      echo "ERROR: VPN connection could not be established after 3 attempts."
+                      exit 1
                     """
                 }
             }
@@ -195,15 +256,9 @@ pipeline {
        stage('Deploy to Server') {
            steps {
                script {
-                  // Get the current branch name
-                  def branchName = env.BRANCH_NAME
-                  // Get the current commit hash
-                  def commitHash = env.GIT_COMMIT
 
-                  // Read the version from pom.xml
-                  def pom = readMavenPom file: 'pom.xml'
                   def version = selectedVersion
-                  def artifactId = pom.artifactId
+                  def artifactId = selectedArtefact
 
                   // Transfer the JAR file to the remote server
                   sh "sudo scp -v -o StrictHostKeyChecking=no -i ${SSH_KEY} ${artifactId}-${version}.jar ${REMOTE_SERVER}:/opt/${artifactId}/latest/"
@@ -215,16 +270,16 @@ pipeline {
                          sudo mkdir -p /opt/${artifactId}/latest
                          sudo mkdir -p /opt/${artifactId}/current
 
-                         // Create a new symlink with a temporary name
+                         # Create a new symlink with a temporary name
                          sudo ln -sfn /opt/${artifactId}/latest/${artifactId}-${version}.jar /opt/${artifactId}/current/${artifactId}.jar.new
 
-                         // Atomically replace the old symlink with the new one
+                         # Atomically replace the old symlink with the new one
                          sudo mv -f /opt/${artifactId}/current/${artifactId}.jar.new /opt/${artifactId}/current/${artifactId}.jar
 
-                         // Verify the symlink before restarting the service
+                         # Verify the symlink before restarting the service
                          ls -l /opt/${artifactId}/current/${artifactId}.jar
 
-                         // Restart the service only if the new symlink exists
+                         # Restart the service only if the new symlink exists
                          if [ -L /opt/${artifactId}/current/${artifactId}.jar ]; then
                              sudo systemctl restart ${artifactId}
                          else
@@ -238,7 +293,6 @@ EOF
         }
     }
 
-    // always close the connection
     post {
         always {
             // Ensure VPN is stopped even if the build fails
@@ -248,3 +302,4 @@ EOF
         }
     }
 }
+
