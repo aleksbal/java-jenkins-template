@@ -123,7 +123,7 @@ pipeline {
                     def versions = sh(
                         script: '''
                         curl -s -H "X-JFrog-Art-Api: ${ARTIFACTORY_API_KEY}" \
-                        "${ARTIFACTORY_URL}/api/storage/${REPOSITORY}/org/xyz/platform/microservice" \
+                        ${ARTIFACTORY_URL}/api/storage/${REPOSITORY}/${GROUP_PATH}/${artifactId} \
                         | grep '"uri"' \
                         | cut -d '"' -f 4 \
                         | sed 's|^/||'
