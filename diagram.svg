@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+  <rect x="0" y="0" width="800" height="600" fill="#fff" />
+  <rect x="0" y="0" width="800" height="600" fill="#efeff8" stroke="#cccccc" stroke-width="1"/>
+
+  <!-- Source Control -->
+  <rect x="60" y="80" width="120" height="40" rx="12" fill="#e6f7ff" stroke="#007C30" stroke-width="1"/>
+  <text x="100" y="106" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#007C30" text-anchor="middle">Source Control (Git)</text>
+
+  <!-- CICD Pipeline -->
+  <rect x="200" y="70" width="360" height="290" rx="12" fill="#fff" stroke="#007C30" stroke-width="1"/>
+  <text x="380" y="90" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#007C30" text-anchor="middle">CICD stages</text>
+  <text x="210" y="130" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#007C30">Build</text>
+  <text x="210" y="170" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#007C30">Test</text>
+  <text x="210" y="210" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#007C30">Code Quality</text>
+  <text x="210" y="250" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#007C30">Artifact Repository</text>
+
+  <!-- Artifact Repository -->
+  <rect x="60" y="370" width="120" height="40" rx="12" fill="#e6f7ff" stroke="#007C30" stroke-width="1"/>
+   <text x="100" y="406" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#007C30" text-anchor="middle">Artifact Repository</text>
+
+  <!-- Cloud Deployment -->
+  <rect x="200" y="330" width="360" height="120" rx="12" fill="#fff" stroke="#007C30" stroke-width="1"/>
+  <text x="380" y="370" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#007C30" text-anchor="middle">Cloud Provider (Aws, Azure)</text>
+</svg>
