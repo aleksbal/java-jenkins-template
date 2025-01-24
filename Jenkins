@@ -1,12 +1,10 @@
 /*
     Description:
 
-    - build:            mvn clean package without tests
+    - build:            mvn clean package
     - test:             mvn test
     - Build image:      mvn clean package spring-boot:build-image
-    - Push image:       pushes the image into  artifactory
-                        the artefact id and the version is used from pom
-    - AWS Deploy Ec2:   establishes a VPN connection and deploys file via SCP
+    - Push image:       pushes the image into artifactory
 */
 
 
